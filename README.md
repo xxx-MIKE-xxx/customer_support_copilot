@@ -1,975 +1,814 @@
-# Historical Support Response RAG Copilot
+# Project Documentation: Reference-Answer RAG Customer Support Copilot
 
 ## 1. Project Overview
 
-**Historical Support Response RAG Copilot** is an AI engineering project that builds a customer-support assistant using historical customer-company conversations.
+This project builds a **Customer Support Copilot** that helps support agents answer customer messages by retrieving similar historical support conversations and using official company responses as reference answers.
 
-The main idea is to treat previous **company responses** as approved or semi-approved reference answers. When a new customer message arrives, the system retrieves similar past customer issues and uses the corresponding company responses as context for drafting a new support reply.
+Instead of treating the dataset only as raw chat text, the project treats each historical **company response** as a supervised reference label. For a new customer message, the system retrieves similar past customer issues, fetches the corresponding company responses, and uses those examples as grounding context for an LLM-generated draft.
 
-This makes the project closer to a real-world AI support workflow than a generic chatbot because the system learns from historical support behavior instead of relying only on synthetic examples or manually written FAQ documents.
+The main idea is:
 
-## 2. Core Project Idea
+> “Given a new customer complaint or question, find similar past customer messages and official company replies, then generate a high-quality answer that follows the company’s historical support style.”
 
-The project uses historical support conversations as paired examples:
+The primary dataset is **Customer Support on Twitter**, which contains over 3 million tweets and replies from major brands on Twitter/X. The dataset contains fields such as `tweet_id`, `author_id`, `created_at`, `text`, `inbound`, `response_tweet_id`, and `in_response_to_tweet_id`, which makes it possible to reconstruct customer-company conversation pairs.
+
+## 2. Business Problem
+
+Customer support teams often receive many repeated questions:
+
+* delivery delays,
+* refund requests,
+* account access issues,
+* app bugs,
+* billing complaints,
+* service outages,
+* product availability questions.
+
+A human support agent usually needs to search internal documentation or previous tickets before replying. This is slow and inconsistent.
+
+This project solves that by building an AI assistant that:
+
+1. classifies the customer’s issue,
+2. retrieves similar historical support cases,
+3. shows official historical company replies,
+4. generates a suggested response,
+5. explains which past cases influenced the answer,
+6. flags low-confidence cases for human review.
+
+The final system should behave like an internal support tool, not a public-facing autonomous chatbot.
+
+## 3. Core Project Idea
+
+The key modification is to use **company responses as labels**.
+
+In a standard RAG system, the retrieved documents are usually documentation pages, FAQs, or knowledge base articles.
+
+In this project, the retrieved documents are **historical solved support cases**:
 
 ```text
 Customer message → Company response
 ```
 
-The customer message is the input query.
+The customer message becomes the retrieval query candidate.
 
-The company response is used as:
+The company response becomes the reference label.
 
-1. a reference answer;
-2. a retrieval document for RAG;
-3. a weak evaluation target;
-4. a source of response style and support behavior.
+For training and evaluation, the system learns:
 
-The company response should not be treated as a perfect ground-truth label. It is better described as a **historical reference response** because it may be short, brand-specific, outdated, incomplete, or dependent on private context.
+```text
+Given this customer message,
+can the system retrieve similar past cases
+and generate an answer close to the real company response?
+```
 
-## 3. Problem Statement
+This turns the project into a hybrid of:
 
-Customer support teams often handle many repetitive issues such as delivery problems, cancellations, refunds, payment failures, account access, and product questions.
+* retrieval-based customer support,
+* supervised response modeling,
+* RAG evaluation,
+* customer service workflow automation.
 
-A support agent may already have thousands or millions of historical conversations available, but searching through them manually is not practical.
+## 4. Dataset
 
-The goal of this project is to build an AI copilot that can:
+### Primary Dataset
 
-1. receive a new customer message;
-2. classify the likely issue;
-3. retrieve similar historical conversations;
-4. use past company responses as examples;
-5. generate a new response draft;
-6. cite the retrieved historical examples;
-7. recommend escalation when confidence is low.
+**Customer Support on Twitter**
 
-## 4. Datasets
+The dataset contains customer support interactions between customers and company support accounts. It includes inbound customer tweets and outbound company replies.
 
-### 4.1 Primary Dataset: Customer Support on Twitter
+Relevant fields:
 
-The main dataset is **Customer Support on Twitter** from Kaggle. It contains over 3 million tweets and replies from major brands on Twitter/X, making it useful for studying real customer-brand support interactions.
+| Field                     | Meaning                                           |
+| ------------------------- | ------------------------------------------------- |
+| `tweet_id`                | Unique anonymized tweet ID                        |
+| `author_id`               | Anonymized author or company support account      |
+| `inbound`                 | Whether the tweet is from a customer to a company |
+| `created_at`              | Timestamp                                         |
+| `text`                    | Tweet content                                     |
+| `response_tweet_id`       | ID or IDs of replies to this tweet                |
+| `in_response_to_tweet_id` | ID of the tweet this tweet replied to             |
 
-The dataset includes fields such as tweet ID, author ID, creation time, text, and response-related IDs, which makes it possible to reconstruct customer-company conversation pairs.
+### Optional Secondary Dataset
 
-This dataset is used for:
+**Bitext Customer Support LLM Chatbot Training Dataset**
 
-* extracting customer-message/company-response pairs;
-* building the historical response retrieval corpus;
-* training or evaluating response generation;
-* analyzing real support conversation patterns;
-* creating weak labels for issue categories.
+This dataset can be used as an auxiliary dataset for intent classification, issue categorization, or prompt testing. Bitext describes the dataset as a customer support dataset with over 8,000 utterances, 27 common intents, and 11 major categories.
 
-### 4.2 Secondary Dataset: Bitext Customer Support Dataset
+Use it only as a supporting dataset, not as the main source of truth, because the main goal is to learn from real historical company responses.
 
-The secondary dataset is the **Bitext Customer Support LLM Chatbot Training Dataset**. It is a customer-service dataset designed for intent detection and chatbot training. The public Bitext description says it contains over 8,000 utterances across 27 common intents grouped into 11 major categories.
+## 5. Target Users
 
-This dataset is used for:
+The target users are:
 
-* supervised intent classification;
-* bootstrapping issue categories;
-* creating synthetic evaluation cases;
-* mapping historical Twitter conversations to cleaner business intents.
+* customer support agents,
+* support team leads,
+* QA reviewers,
+* customer experience analysts.
 
-### 4.3 Optional Supporting Knowledge Base
+The system does not replace support agents. It helps them respond faster and more consistently.
 
-A small fictional company knowledge base can be added as a secondary RAG source.
+## 6. Main Features
 
-Example documents:
+### 6.1 Customer Message Intake
 
-* refund policy;
-* cancellation policy;
-* delivery policy;
-* payment troubleshooting guide;
-* account security FAQ;
-* escalation rules;
-* tone-of-voice guide.
+The user enters a customer message, for example:
 
-The historical company responses should be the main retrieval source. Policy documents are useful as guardrails when historical responses are too short or ambiguous.
+```text
+My order says delivered but I never received it. Can someone help?
+```
 
-## 5. Data Roles
+The system should:
 
-| Data item                      | Role in the system                |
-| ------------------------------ | --------------------------------- |
-| Customer tweet/message         | Input query                       |
-| Company response               | Historical reference response     |
-| Similar past customer messages | Retrieval matches                 |
-| Retrieved company responses    | RAG context                       |
-| Bitext intent                  | Supervised intent label           |
-| Generated response             | Model output                      |
-| Human feedback                 | Evaluation and improvement signal |
+* clean the message,
+* detect language if needed,
+* classify the issue,
+* retrieve similar historical cases,
+* generate a draft reply.
 
-## 6. Example Data Record
+### 6.2 Similar Case Retrieval
 
-After preprocessing, each conversation pair should be stored in a structured format.
+The system embeds the new customer message and searches a vector database for similar historical customer messages.
+
+Each retrieved case should include:
+
+```text
+Customer message
+Official company response
+Brand/company
+Timestamp
+Conversation ID
+Similarity score
+```
+
+The retrieved company responses are used as reference examples.
+
+### 6.3 Reference-Aware Answer Generation
+
+The LLM receives:
+
+* the new customer message,
+* top-k similar historical customer messages,
+* their official company responses,
+* response style rules,
+* safety rules,
+* escalation rules.
+
+The output should be a draft response, not an automatically sent message.
+
+Example output:
+
+```text
+I’m sorry this happened. Please send us a private message with your order number and delivery address so we can look into this for you.
+```
+
+The response should be grounded in retrieved examples and should not invent policies.
+
+### 6.4 Evidence Panel
+
+The UI should show the retrieved reference cases used by the system.
+
+For each retrieved case:
+
+```text
+Similarity: 0.87
+Customer: My package says delivered but it’s not here.
+Company: Sorry about that. Please DM us your order number and delivery address so we can check this with the carrier.
+```
+
+This makes the project stronger because it shows explainability, not just generation.
+
+### 6.5 Confidence and Escalation
+
+The system should estimate whether it is safe to suggest an answer.
+
+Escalate to human review when:
+
+* retrieval similarity is low,
+* retrieved examples disagree with each other,
+* customer message contains legal, medical, financial, or safety-sensitive content,
+* customer is angry or threatening,
+* the model tries to answer without evidence,
+* no similar reference cases are found.
+
+## 7. Machine Learning Tasks
+
+This project includes several AI engineering tasks.
+
+### Task 1: Conversation Reconstruction
+
+Use `tweet_id`, `response_tweet_id`, and `in_response_to_tweet_id` to reconstruct pairs:
+
+```text
+customer_message → company_response
+```
+
+Start with single-turn examples before supporting multi-turn conversations.
+
+Minimum useful training row:
 
 ```json
 {
-  "conversation_id": "conv_001",
-  "customer_message": "I want to cancel my order but the cancel button is missing.",
-  "company_response": "Please DM us your order number so we can check the current status.",
-  "brand": "example_brand",
-  "channel": "twitter",
-  "created_at": "2017-10-12T14:30:00",
-  "intent": "cancel_order",
-  "source": "customer_support_on_twitter"
+  "customer_text": "...",
+  "company_response": "...",
+  "company": "...",
+  "created_at": "...",
+  "conversation_id": "...",
+  "intent": "...",
+  "sentiment": "..."
 }
 ```
 
-## 7. Main Product Workflow
+### Task 2: Label Creation
+
+Treat `company_response` as the gold label.
+
+For each customer message:
 
 ```text
-New customer message
-        |
-        v
-Text cleaning and PII masking
-        |
-        v
-Intent classification
-        |
-        v
-Retrieve similar historical customer messages
-        |
-        v
-Fetch matching company responses
-        |
-        v
-Generate response draft with LLM
-        |
-        v
-Validate with guardrails
-        |
-        v
-Return draft + sources + confidence + escalation recommendation
+Input: customer_text
+Label: company_response
 ```
 
-## 8. RAG Design
+This allows several evaluation tasks:
 
-### 8.1 What Gets Indexed
+* Can retrieval find similar labeled examples?
+* Can the generated answer match the style and intent of the label?
+* Can the system recommend the correct type of response?
+* Can the system avoid hallucinating unsupported policies?
 
-Each indexed item should represent a historical support interaction.
+### Task 3: Intent Classification
 
-Recommended vector database record:
+Train or prompt an intent classifier.
+
+Possible intents:
+
+* refund request,
+* delivery issue,
+* account access,
+* payment issue,
+* technical bug,
+* service outage,
+* cancellation,
+* complaint,
+* general question,
+* escalation required.
+
+The Bitext dataset can help bootstrap intent labels because it contains customer support utterances grouped into common intents and categories.
+
+### Task 4: Retrieval Model
+
+Build a vector search index over historical customer messages.
+
+Recommended embedding options:
+
+* OpenAI embeddings,
+* Cohere embeddings,
+* Sentence Transformers,
+* BGE embeddings.
+
+Recommended vector databases:
+
+* Qdrant,
+* Weaviate,
+* Pinecone,
+* Chroma for local development.
+
+Each vector record should store:
 
 ```json
 {
-  "id": "support_pair_123",
-  "text_for_embedding": "Customer issue: I cannot cancel my order. Company response: Please send us your order number so we can check the cancellation status.",
-  "customer_message": "I cannot cancel my order.",
-  "company_response": "Please send us your order number so we can check the cancellation status.",
-  "brand": "example_brand",
-  "intent": "cancel_order",
-  "created_at": "2017-10-12T14:30:00",
-  "metadata": {
-    "channel": "twitter",
-    "conversation_id": "conv_001"
-  }
+  "customer_text": "...",
+  "company_response": "...",
+  "company": "...",
+  "intent": "...",
+  "created_at": "...",
+  "conversation_id": "..."
 }
 ```
 
-### 8.2 Retrieval Strategy
+### Task 5: RAG Generation
 
-There are two useful retrieval approaches.
+Build a prompt that uses retrieved references.
 
-#### Option A: Embed only the customer message
+The model should not simply copy one historical reply. It should synthesize a new response from multiple relevant company responses.
 
-```text
-I cannot cancel my order.
-```
-
-This is cleaner because the system retrieves based on similarity between customer issues.
-
-#### Option B: Embed customer message + company response
+Prompt structure:
 
 ```text
-Customer issue: I cannot cancel my order.
-Company response: Please send us your order number so we can check the cancellation status.
-```
+You are a customer support assistant helping a human agent.
 
-This can improve semantic retrieval because the embedding contains both the problem and the resolution.
-
-Recommended implementation:
-
-1. Start with Option A.
-2. Build an experiment comparing Option A and Option B.
-3. Measure retrieval quality using Recall@k, MRR, and human review.
-4. Keep the method that retrieves more useful response examples.
-
-### 8.3 Retrieval Output
-
-For a new customer message, the retriever should return similar historical examples.
-
-```json
-{
-  "query": "I need to cancel my order but I cannot find the button.",
-  "retrieved_examples": [
-    {
-      "customer_message": "I want to cancel my order but the cancel button is missing.",
-      "company_response": "Please DM us your order number so we can check the current status.",
-      "similarity_score": 0.89,
-      "brand": "example_brand"
-    },
-    {
-      "customer_message": "How do I cancel an order that already shipped?",
-      "company_response": "Once an order has shipped, cancellation may not be available. Please send us your order details.",
-      "similarity_score": 0.82,
-      "brand": "example_brand"
-    }
-  ]
-}
-```
-
-## 9. Response Generation
-
-The LLM should use retrieved historical company responses as examples, not as facts to copy blindly.
-
-The generated response should:
-
-* answer the current customer message;
-* follow the style of historical company responses;
-* avoid inventing policies;
-* avoid making unsupported promises;
-* ask for missing information when needed;
-* recommend escalation for risky or unclear cases.
-
-### Prompt Template
-
-```text
-You are a customer support copilot.
-
-Your task is to draft a response for a human support agent.
-
-Use the retrieved historical company responses as examples.
-Do not copy them word-for-word unless the wording is generic and safe.
-Do not invent refund, cancellation, payment, delivery, or warranty rules.
-If the retrieved examples are not relevant enough, recommend escalation.
-If private information is needed, ask the customer to provide it through a secure channel.
-
-Customer message:
+New customer message:
 {customer_message}
 
-Detected intent:
-{intent}
+Retrieved historical support cases:
+1. Customer: ...
+   Official company response: ...
 
-Retrieved historical support examples:
-{retrieved_examples}
+2. Customer: ...
+   Official company response: ...
 
-Optional company policy context:
-{policy_context}
+Instructions:
+- Use the historical company responses as reference answers.
+- Do not invent policies.
+- If the references are not relevant, say that human review is needed.
+- Keep the answer short, helpful, and professional.
+- Do not claim actions were completed unless the references support it.
 
-Return:
-1. Draft response
-2. Confidence score from 0 to 1
-3. Sources used
-4. Escalation recommendation
-5. Short explanation for the support agent
+Draft response:
 ```
 
-## 10. Example System Output
-
-```json
-{
-  "intent": "cancel_order",
-  "intent_confidence": 0.91,
-  "draft_response": "Hi, I’m sorry you’re having trouble canceling your order. Please send your order number through our secure support form or direct message so we can check whether the order is still eligible for cancellation.",
-  "retrieved_sources": [
-    {
-      "customer_message": "I want to cancel my order but the cancel button is missing.",
-      "company_response": "Please DM us your order number so we can check the current status.",
-      "similarity_score": 0.89
-    }
-  ],
-  "requires_human_review": false,
-  "confidence": 0.84,
-  "agent_note": "The retrieved examples suggest asking for the order number and checking cancellation status. No specific refund promise was made."
-}
-```
-
-## 11. Key Machine Learning Components
-
-### 11.1 Intent Classifier
-
-The intent classifier predicts the support issue type.
-
-Possible classes:
-
-* cancel order;
-* track order;
-* refund request;
-* payment issue;
-* delivery issue;
-* account access;
-* password reset;
-* product question;
-* complaint;
-* escalation request.
-
-Recommended model progression:
-
-1. TF-IDF + Logistic Regression baseline;
-2. sentence embeddings + classifier;
-3. fine-tuned transformer;
-4. LLM-based classifier as comparison.
-
-Metrics:
-
-* accuracy;
-* macro F1;
-* per-class precision and recall;
-* confusion matrix;
-* calibration error.
-
-### 11.2 Historical Response Retriever
-
-The retriever finds similar historical support conversations.
-
-Recommended approaches:
-
-1. dense vector search;
-2. BM25 keyword search;
-3. hybrid search;
-4. reranking with a cross-encoder or LLM.
-
-Metrics:
-
-* Recall@3;
-* Recall@5;
-* Mean Reciprocal Rank;
-* nDCG;
-* average retrieval latency;
-* human relevance score.
-
-### 11.3 Response Generator
-
-The generator creates a draft response using the retrieved examples.
-
-The model can be:
-
-* hosted LLM API;
-* local open-source model;
-* fine-tuned model;
-* smaller model with strong retrieval context.
-
-Metrics:
-
-* answer relevance;
-* faithfulness to retrieved examples;
-* tone quality;
-* escalation correctness;
-* hallucination rate;
-* human acceptance rate.
-
-## 12. Guardrails
-
-The system must prevent unsafe or unsupported responses.
-
-Guardrail checks:
-
-1. Does the answer rely on retrieved examples?
-2. Does it invent a policy?
-3. Does it promise a refund, compensation, or delivery date without evidence?
-4. Does it expose private information?
-5. Does it ask for sensitive data in an unsafe way?
-6. Is the retrieved context relevant enough?
-7. Should this ticket be escalated?
-
-Example guardrail output:
-
-```json
-{
-  "passed": false,
-  "issues": [
-    "The generated answer promised a full refund, but no retrieved response supported that promise."
-  ],
-  "recommended_action": "regenerate_or_escalate"
-}
-```
-
-## 13. Evaluation Strategy
-
-### 13.1 Retrieval Evaluation
-
-Create a test set of customer messages with known historical company responses.
-
-For each customer message, check whether the system retrieves the original or a highly similar company response.
-
-Metrics:
-
-* Recall@1;
-* Recall@3;
-* Recall@5;
-* MRR;
-* nDCG.
-
-Example:
+## 8. System Architecture
 
 ```text
-Input customer message:
-"Where is my package? It says delivered but I never got it."
-
-Expected retrieved response type:
-Company asks for order number or tracking details and opens investigation.
+                  ┌────────────────────┐
+                  │ Customer Message    │
+                  └─────────┬──────────┘
+                            │
+                            v
+                  ┌────────────────────┐
+                  │ Preprocessing       │
+                  │ cleaning, language  │
+                  │ detection, PII mask │
+                  └─────────┬──────────┘
+                            │
+                            v
+                  ┌────────────────────┐
+                  │ Intent Classifier   │
+                  └─────────┬──────────┘
+                            │
+                            v
+                  ┌────────────────────┐
+                  │ Embedding Model     │
+                  └─────────┬──────────┘
+                            │
+                            v
+                  ┌────────────────────┐
+                  │ Vector Database     │
+                  │ similar cases       │
+                  └─────────┬──────────┘
+                            │
+                            v
+                  ┌────────────────────┐
+                  │ RAG Prompt Builder  │
+                  └─────────┬──────────┘
+                            │
+                            v
+                  ┌────────────────────┐
+                  │ LLM Draft Generator │
+                  └─────────┬──────────┘
+                            │
+                            v
+                  ┌────────────────────┐
+                  │ Guardrails + Eval   │
+                  └─────────┬──────────┘
+                            │
+                            v
+                  ┌────────────────────┐
+                  │ Agent UI / API      │
+                  └────────────────────┘
 ```
 
-### 13.2 Generation Evaluation
+## 9. Backend API
 
-Compare the generated draft against the historical company response.
+Build the backend with FastAPI.
 
-Important: the generated answer does not need to exactly match the original response. It should be judged on usefulness, correctness, tone, and grounding.
+### Endpoint: `POST /suggest-response`
 
-Metrics:
-
-* semantic similarity to reference response;
-* answer relevance;
-* policy safety;
-* hallucination rate;
-* tone score;
-* human rating.
-
-### 13.3 Human Evaluation
-
-Create a benchmark of 100–200 support tickets.
-
-Human reviewers rate:
-
-```text
-1 = unusable
-2 = poor
-3 = acceptable with edits
-4 = good
-5 = ready to use
-```
-
-Review criteria:
-
-* Is the answer helpful?
-* Is it grounded in retrieved examples?
-* Is the tone appropriate?
-* Did it avoid unsupported promises?
-* Should the ticket have been escalated?
-* Would a support agent use this draft?
-
-## 14. API Design
-
-### POST `/tickets/analyze`
-
-Analyzes the incoming customer message.
-
-Input:
+Request:
 
 ```json
 {
-  "message": "I need to cancel my order but I cannot find the cancel button.",
-  "channel": "chat"
-}
-```
-
-Output:
-
-```json
-{
-  "intent": "cancel_order",
-  "intent_confidence": 0.91,
-  "priority": "medium",
-  "requires_human_review": false
-}
-```
-
-### POST `/tickets/retrieve-examples`
-
-Retrieves similar historical support interactions.
-
-Input:
-
-```json
-{
-  "message": "I need to cancel my order but I cannot find the cancel button.",
+  "customer_message": "My order says delivered but I never got it.",
+  "company": "AmazonHelp",
   "top_k": 5
 }
 ```
 
-Output:
+Response:
 
 ```json
 {
-  "retrieved_examples": [
+  "draft_response": "I’m sorry this happened. Please send us a private message with your order number and delivery address so we can look into this.",
+  "intent": "delivery_issue",
+  "confidence": 0.84,
+  "needs_human_review": false,
+  "retrieved_cases": [
     {
-      "customer_message": "I want to cancel my order but the cancel button is missing.",
-      "company_response": "Please DM us your order number so we can check the current status.",
-      "similarity_score": 0.89
+      "customer_text": "My package says delivered but I never received it.",
+      "company_response": "Sorry about that. Please DM us your order number and delivery address so we can check this with the carrier.",
+      "similarity": 0.89
     }
   ]
 }
 ```
 
-### POST `/tickets/draft-response`
+### Endpoint: `POST /evaluate`
 
-Generates a support response draft.
+Evaluate generated answers against historical labels.
 
-Input:
-
-```json
-{
-  "message": "I need to cancel my order but I cannot find the cancel button.",
-  "intent": "cancel_order",
-  "top_k": 5
-}
-```
-
-Output:
+Request:
 
 ```json
 {
-  "draft_response": "Hi, I’m sorry you’re having trouble canceling your order. Please send your order number through our secure support form so we can check whether the order is still eligible for cancellation.",
-  "confidence": 0.84,
-  "requires_human_review": false,
-  "sources": [
-    {
-      "customer_message": "I want to cancel my order but the cancel button is missing.",
-      "company_response": "Please DM us your order number so we can check the current status.",
-      "similarity_score": 0.89
-    }
-  ]
+  "customer_message": "...",
+  "gold_company_response": "...",
+  "generated_response": "..."
 }
 ```
 
-### POST `/feedback`
-
-Collects support-agent feedback.
-
-Input:
+Response:
 
 ```json
 {
-  "ticket_id": "ticket_123",
-  "agent_rating": 4,
-  "agent_edited_response": true,
-  "comment": "Useful draft, but needed a shorter tone."
+  "semantic_similarity": 0.82,
+  "retrieval_hit": true,
+  "faithfulness_score": 0.91,
+  "toxicity_flag": false,
+  "policy_hallucination_flag": false
 }
 ```
 
-## 15. User Interface
+## 10. Frontend
 
-The UI should have four panels.
+Build a simple dashboard using Streamlit, Next.js, or React.
 
-### Panel 1: Ticket Input
+The UI should contain:
 
-* customer message text box;
-* channel selector;
-* optional customer metadata;
-* submit button.
+1. customer message input,
+2. selected company or brand,
+3. generated draft response,
+4. retrieved reference cases,
+5. confidence score,
+6. human review warning,
+7. feedback buttons:
 
-### Panel 2: AI Analysis
+   * good answer,
+   * wrong intent,
+   * unsafe answer,
+   * not enough evidence.
 
-Show:
+This feedback can later be stored for evaluation and improvement.
 
-* detected intent;
-* confidence;
-* priority;
-* escalation flag.
+## 11. Evaluation Plan
 
-### Panel 3: Retrieved Historical Examples
+The project should not rely only on “the answer looks good.”
 
-Show each retrieved example:
+Use offline and qualitative evaluation.
 
-* similar customer message;
-* company response;
-* similarity score;
-* brand or source;
-* timestamp if available.
+### 11.1 Retrieval Evaluation
 
-### Panel 4: Draft Response
+Split historical data into train/test.
 
-Show:
+For each test customer message:
 
-* generated response;
-* confidence score;
-* cited historical examples;
-* guardrail warnings;
-* copy button;
-* thumbs up/down feedback.
+1. hide the real company response,
+2. retrieve similar cases from the training set,
+3. check whether retrieved cases have similar intent or response style.
 
-## 16. Recommended Tech Stack
+Metrics:
 
-| Layer               | Suggested tools                                                |
-| ------------------- | -------------------------------------------------------------- |
-| Backend API         | FastAPI                                                        |
-| UI                  | Streamlit, Next.js, or React                                   |
-| Data processing     | pandas, Polars                                                 |
-| Classical ML        | scikit-learn                                                   |
-| Embeddings          | SentenceTransformers, OpenAI embeddings, BGE, or E5            |
-| Vector database     | Qdrant, Chroma, Weaviate, or Pinecone                          |
-| Keyword search      | Elasticsearch, OpenSearch, or BM25                             |
-| LLM                 | OpenAI, Anthropic, Gemini, or local Llama                      |
-| Database            | PostgreSQL                                                     |
-| Experiment tracking | MLflow or Weights & Biases                                     |
-| Monitoring          | Prometheus, Grafana, Evidently                                 |
-| Deployment          | Docker, Docker Compose, Cloud Run, Render, Fly.io, AWS, or GCP |
+* Recall@k,
+* MRR,
+* cosine similarity,
+* intent match rate,
+* company match rate.
 
-## 17. Data Pipeline
+### 11.2 Generation Evaluation
+
+Compare the generated response to the real company response label.
+
+Metrics:
+
+* semantic similarity,
+* BERTScore,
+* ROUGE as a weak baseline,
+* LLM-as-judge score,
+* human review score.
+
+Important: the generated response does not need to match the label word-for-word. It should match the intent, policy, tone, and action.
+
+### 11.3 RAG Faithfulness Evaluation
+
+Check whether the answer is supported by retrieved company responses.
+
+Questions:
+
+* Did the model invent a refund policy?
+* Did it ask for information that similar company responses asked for?
+* Did it claim an action was completed without evidence?
+* Did it contradict retrieved examples?
+
+### 11.4 Safety Evaluation
+
+Flag responses that:
+
+* request sensitive personal information unnecessarily,
+* include offensive language,
+* make legal or financial promises,
+* reveal private information,
+* over-apologize without solving the issue,
+* pretend to be a human agent.
+
+## 12. Suggested Tech Stack
+
+### Data Processing
+
+* Python
+* pandas
+* Polars for larger files
+* Jupyter notebooks
+* Great Expectations or Pandera for data validation
+
+### Machine Learning
+
+* scikit-learn for baselines
+* Sentence Transformers or OpenAI embeddings
+* LightGBM for intent classification baseline
+* optional fine-tuning later
+
+### RAG
+
+* Qdrant or Weaviate
+* LangChain or LlamaIndex
+* OpenAI, Anthropic, or local Llama model
+* reranker model for better retrieval quality
+
+### Backend
+
+* FastAPI
+* Pydantic
+* PostgreSQL
+* Redis cache
+* Docker
+
+### Frontend
+
+* Streamlit for fast portfolio demo
+* or Next.js for a more polished product demo
+
+### MLOps
+
+* MLflow for experiment tracking
+* Docker Compose
+* GitHub Actions
+* Evidently AI for drift monitoring
+* pytest for testing
+
+## 13. Development Milestones
+
+### Milestone 1: Data Understanding
+
+Deliverables:
+
+* load dataset,
+* inspect schema,
+* count inbound and outbound messages,
+* identify company support accounts,
+* reconstruct simple customer-response pairs,
+* create cleaned dataset.
+
+Success criteria:
+
+* at least 100,000 clean customer-response pairs,
+* each pair has customer text and company response,
+* missing or broken threads removed.
+
+### Milestone 2: Baseline Retrieval
+
+Deliverables:
+
+* create embeddings for customer messages,
+* store vectors in Qdrant or Chroma,
+* retrieve top-k similar cases,
+* display retrieved company responses.
+
+Success criteria:
+
+* retrieval returns relevant cases for common support issues,
+* simple command-line demo works.
+
+### Milestone 3: Label-Based Evaluation
+
+Deliverables:
+
+* split dataset into train/test,
+* treat company responses as labels,
+* evaluate retrieval quality,
+* create baseline response generator.
+
+Success criteria:
+
+* report Recall@5 and semantic similarity,
+* show examples where retrieval works and fails.
+
+### Milestone 4: RAG Draft Generator
+
+Deliverables:
+
+* prompt builder,
+* LLM integration,
+* generated response with references,
+* confidence scoring.
+
+Success criteria:
+
+* generated responses are grounded in retrieved examples,
+* system refuses or escalates weak retrieval cases.
+
+### Milestone 5: Support Agent UI
+
+Deliverables:
+
+* web UI,
+* input box,
+* draft answer,
+* retrieved evidence panel,
+* feedback buttons.
+
+Success criteria:
+
+* user can test the system end-to-end from browser.
+
+### Milestone 6: Productionization
+
+Deliverables:
+
+* FastAPI backend,
+* Docker Compose setup,
+* tests,
+* logging,
+* monitoring dashboard,
+* README,
+* architecture diagram.
+
+Success criteria:
+
+* one-command local startup,
+* reproducible evaluation,
+* demo video or screenshots.
+
+## 14. Repository Structure
 
 ```text
-Raw Twitter support dataset
-        |
-        v
-Conversation reconstruction
-        |
-        v
-Customer-company pair extraction
-        |
-        v
-Cleaning and PII masking
-        |
-        v
-Intent labeling
-        |
-        v
-Embedding generation
-        |
-        v
-Vector database indexing
-        |
-        v
-Evaluation dataset creation
-```
-
-### 17.1 Conversation Pair Extraction
-
-Steps:
-
-1. Load raw Twitter support records.
-2. Identify inbound customer messages.
-3. Match each customer message to the company response using response IDs.
-4. Remove conversations without clear customer-company pairs.
-5. Remove duplicate or low-quality examples.
-6. Store clean pairs in a structured format.
-
-### 17.2 Cleaning
-
-Apply:
-
-* remove empty texts;
-* normalize whitespace;
-* mask emails;
-* mask phone numbers;
-* mask order IDs;
-* mask usernames where needed;
-* preserve important placeholders like `<ORDER_ID>` or `<EMAIL>`.
-
-Example:
-
-```text
-Original:
-My order #123456 never arrived. Email me at alex@example.com.
-
-Cleaned:
-My order <ORDER_ID> never arrived. Email me at <EMAIL>.
-```
-
-### 17.3 Intent Labeling
-
-Use Bitext as the clean intent dataset.
-
-For Twitter support conversations, assign weak labels using:
-
-* keyword rules;
-* embedding similarity to Bitext examples;
-* zero-shot classification;
-* manual validation sample.
-
-Example:
-
-```json
-{
-  "customer_message": "Where is my package? It says delivered but I never received it.",
-  "weak_intent": "delivery_issue",
-  "label_source": "embedding_similarity_to_bitext",
-  "label_confidence": 0.78
-}
-```
-
-## 18. Monitoring
-
-Track:
-
-* request volume;
-* average latency;
-* LLM cost per request;
-* retrieval score distribution;
-* percentage of low-confidence tickets;
-* escalation rate;
-* guardrail failure rate;
-* agent acceptance rate;
-* most common intents;
-* most commonly retrieved historical responses.
-
-Example metrics:
-
-```text
-support_copilot_request_count
-support_copilot_avg_latency_seconds
-retrieval_top1_similarity_avg
-draft_guardrail_failure_rate
-human_escalation_rate
-agent_acceptance_rate
-llm_cost_usd_per_day
-```
-
-## 19. Project Milestones
-
-### Milestone 1: Dataset and Conversation Pair Extraction
-
-Deliverables:
-
-* raw data download instructions;
-* script for loading Twitter support data;
-* extracted customer-company pairs;
-* cleaned dataset;
-* exploratory data analysis notebook.
-
-Success criteria:
-
-* at least 100,000 usable customer-company pairs;
-* documented data schema;
-* examples of good and bad extracted pairs.
-
-### Milestone 2: Intent Classification Baseline
-
-Deliverables:
-
-* Bitext-based intent classifier;
-* weak labeling pipeline for Twitter conversations;
-* classifier evaluation report;
-* confusion matrix.
-
-Success criteria:
-
-* macro F1 above a majority-class baseline;
-* clear explanation of weak-label limitations;
-* manually reviewed sample of predictions.
-
-### Milestone 3: Historical Response Retrieval
-
-Deliverables:
-
-* vector database index;
-* retrieval API;
-* comparison of embedding strategies;
-* retrieval evaluation report.
-
-Success criteria:
-
-* relevant examples appear in top 5 for most test queries;
-* retrieval results are shown with company responses;
-* retrieval failure cases are documented.
-
-### Milestone 4: RAG Response Drafting
-
-Deliverables:
-
-* prompt template;
-* LLM response generator;
-* source attribution;
-* guardrail validation;
-* generated response examples.
-
-Success criteria:
-
-* generated drafts use retrieved historical examples;
-* unsupported policy claims are blocked;
-* unclear cases are escalated.
-
-### Milestone 5: Full Copilot Application
-
-Deliverables:
-
-* FastAPI backend;
-* UI;
-* feedback collection;
-* Docker setup;
-* deployment-ready configuration.
-
-Success criteria:
-
-* user can submit a support ticket and receive:
-
-  * intent;
-  * retrieved examples;
-  * draft response;
-  * confidence score;
-  * escalation recommendation.
-
-### Milestone 6: Evaluation and Portfolio Report
-
-Deliverables:
-
-* retrieval evaluation;
-* generation evaluation;
-* human review sample;
-* monitoring dashboard;
-* final README;
-* architecture diagram;
-* model card.
-
-Success criteria:
-
-* project is reproducible;
-* metrics are clearly reported;
-* failure cases and tradeoffs are documented.
-
-## 20. Suggested Repository Structure
-
-```text
-historical-support-rag-copilot/
+reference-answer-rag-support-copilot/
+│
 ├── README.md
 ├── docker-compose.yml
+├── requirements.txt
 ├── .env.example
+│
 ├── data/
 │   ├── raw/
 │   ├── interim/
-│   ├── processed/
-│   └── eval/
-├── docs/
-│   ├── project_documentation.md
-│   ├── architecture.md
-│   ├── evaluation_report.md
-│   ├── model_card.md
-│   └── policies/
-│       ├── refund_policy.md
-│       ├── cancellation_policy.md
-│       ├── delivery_policy.md
-│       └── escalation_rules.md
+│   └── processed/
+│
 ├── notebooks/
-│   ├── 01_eda.ipynb
-│   ├── 02_pair_extraction.ipynb
-│   ├── 03_intent_baseline.ipynb
-│   └── 04_retrieval_evaluation.ipynb
+│   ├── 01_data_exploration.ipynb
+│   ├── 02_conversation_reconstruction.ipynb
+│   ├── 03_retrieval_baseline.ipynb
+│   └── 04_evaluation.ipynb
+│
 ├── src/
-│   ├── api/
-│   │   ├── main.py
-│   │   └── routes.py
 │   ├── data/
-│   │   ├── ingest_twitter.py
-│   │   ├── extract_pairs.py
+│   │   ├── load_data.py
 │   │   ├── clean_text.py
-│   │   └── pii_masking.py
-│   ├── labeling/
-│   │   ├── intent_mapping.py
-│   │   └── weak_labeling.py
-│   ├── models/
-│   │   ├── intent_classifier.py
-│   │   └── priority_classifier.py
+│   │   └── build_pairs.py
+│   │
 │   ├── retrieval/
-│   │   ├── embeddings.py
-│   │   ├── index_builder.py
-│   │   ├── retriever.py
-│   │   └── reranker.py
+│   │   ├── embed.py
+│   │   ├── vector_store.py
+│   │   └── retrieve_cases.py
+│   │
 │   ├── generation/
-│   │   ├── prompt_templates.py
-│   │   └── response_generator.py
-│   ├── guardrails/
-│   │   └── validator.py
+│   │   ├── prompt_builder.py
+│   │   ├── llm_client.py
+│   │   └── guardrails.py
+│   │
 │   ├── evaluation/
-│   │   ├── evaluate_intent.py
-│   │   ├── evaluate_retrieval.py
-│   │   └── evaluate_generation.py
-│   └── monitoring/
-│       └── metrics.py
+│   │   ├── retrieval_metrics.py
+│   │   ├── generation_metrics.py
+│   │   └── rag_faithfulness.py
+│   │
+│   └── api/
+│       ├── main.py
+│       ├── schemas.py
+│       └── routes.py
+│
+├── app/
+│   └── streamlit_app.py
+│
 ├── tests/
-│   ├── test_pair_extraction.py
-│   ├── test_cleaning.py
+│   ├── test_pair_builder.py
 │   ├── test_retrieval.py
-│   ├── test_generation.py
 │   └── test_api.py
-└── frontend/
-    └── app.py
+│
+└── reports/
+    ├── model_card.md
+    ├── evaluation_report.md
+    └── architecture.md
 ```
 
-## 21. Portfolio Presentation
+## 15. Portfolio Presentation
 
-The final portfolio page should include:
+The final portfolio project should include:
 
-* project motivation;
-* architecture diagram;
-* dataset explanation;
-* examples of extracted customer-company pairs;
-* retrieval demo;
-* generated response examples;
-* evaluation metrics;
-* failure cases;
-* monitoring screenshots;
-* deployment link;
-* GitHub repository.
+* GitHub repository,
+* clean README,
+* architecture diagram,
+* short demo video,
+* screenshots of the UI,
+* evaluation report,
+* examples of retrieved reference responses,
+* failure analysis,
+* deployment instructions.
 
-Strong portfolio points:
+The project should clearly explain that the system is not just a chatbot. It is a **reference-answer RAG system** that learns from historical official company replies.
 
-* uses real historical customer support conversations;
-* shows practical RAG design;
-* combines retrieval, classification, generation, guardrails, and evaluation;
-* treats historical company responses as reference examples instead of blindly copying them;
-* demonstrates human-in-the-loop support automation.
+## 16. Example README Summary
 
-## 22. Success Metrics
+```text
+Reference-Answer RAG Customer Support Copilot is an AI assistant for support agents.
 
-### Retrieval Metrics
+The system uses historical customer support conversations from Twitter/X. Customer messages are used as retrieval queries, while official company replies are treated as gold reference answers.
 
-* Recall@3: target 0.75+
-* Recall@5: target 0.85+
-* MRR: target 0.65+
-* average retrieval latency: below 500 ms
+For a new customer issue, the system retrieves similar historical cases, shows the official replies used as evidence, and generates a grounded draft response for a human support agent to review.
 
-### Classification Metrics
+The project demonstrates real-world AI engineering skills: data preprocessing, conversation reconstruction, embeddings, vector search, RAG, LLM prompting, evaluation, FastAPI deployment, Docker, and monitoring.
+```
 
-* intent classifier macro F1: target 0.75+
-* escalation recall for risky cases: target 0.85+
+## 17. Why This Project Is Portfolio-Worthy
 
-### Generation Metrics
+This project is stronger than a simple chatbot because it includes:
 
-* human response usefulness rating: target 4/5
-* hallucination rate: below 5%
-* unsupported policy claim rate: below 3%
-* agent draft acceptance rate: target 60%+
+* real-world noisy data,
+* weak supervision from historical company responses,
+* retrieval over solved cases,
+* label-based evaluation,
+* LLM generation,
+* confidence scoring,
+* explainability,
+* human-in-the-loop workflow,
+* production-style API and UI.
 
-### System Metrics
+It demonstrates practical AI engineering, not only model training.
 
-* end-to-end latency: below 5 seconds
-* API uptime in demo environment: 99%+
-* LLM cost per request: tracked and reported
+## 18. Main Risks and How to Handle Them
 
-## 23. Main Risks and Mitigations
+### Risk 1: Noisy Twitter Conversations
 
-| Risk                                            | Mitigation                                              |
-| ----------------------------------------------- | ------------------------------------------------------- |
-| Historical company responses are too short      | Retrieve multiple examples and add optional policy docs |
-| Responses are brand-specific                    | Store brand metadata and filter by brand when needed    |
-| Old responses may no longer be valid            | Add timestamp metadata and prefer newer responses       |
-| LLM copies responses too directly               | Prompt against direct copying and check similarity      |
-| LLM invents policy details                      | Use guardrails and optional policy context              |
-| Weak intent labels are noisy                    | Manually validate a sample and report label quality     |
-| Sensitive data appears in logs                  | Mask PII before indexing or logging                     |
-| Retrieval finds similar wording but wrong issue | Add reranking and human evaluation                      |
+Tweets can be short, sarcastic, incomplete, or multi-turn.
 
-## 24. Final Deliverables
+Solution:
 
-The completed project should include:
+* start with single-turn pairs,
+* filter very short messages,
+* remove broken threads,
+* later add multi-turn reconstruction.
 
-1. customer-company pair extraction pipeline;
-2. cleaned historical support dataset;
-3. intent classifier;
-4. vector database of historical support interactions;
-5. retrieval API;
-6. RAG response generator;
-7. guardrail validator;
-8. FastAPI backend;
-9. simple UI;
-10. evaluation scripts;
-11. monitoring metrics;
-12. Docker setup;
-13. final README;
-14. architecture diagram;
-15. model card;
-16. portfolio demo.
+### Risk 2: Company Responses Are Not Always Ideal Labels
 
-## 25. One-Sentence Portfolio Summary
+Some company replies may be generic, outdated, or unhelpful.
 
-Historical Support Response RAG Copilot is a production-style AI engineering project that retrieves similar historical customer support conversations and uses previous company responses as grounded examples to generate safe, useful, and reviewable support reply drafts.
+Solution:
 
+* filter generic replies,
+* group by company,
+* score response usefulness,
+* keep low-quality labels out of evaluation.
+
+### Risk 3: RAG May Retrieve Similar Words but Wrong Policy
+
+A delivery issue for one company may not apply to another company.
+
+Solution:
+
+* filter retrieval by company when possible,
+* include company metadata,
+* add reranking,
+* require confidence threshold.
+
+### Risk 4: LLM Hallucination
+
+The model may invent policies or actions.
+
+Solution:
+
+* force citation to retrieved cases,
+* add guardrails,
+* add “not enough evidence” fallback,
+* log hallucination examples.
+
+## 19. Final Success Criteria
+
+The project is successful when:
+
+1. a user can enter a new customer support message,
+2. the system retrieves relevant historical support cases,
+3. the system displays official company responses as references,
+4. the LLM generates a useful draft reply,
+5. the system gives a confidence score,
+6. weak or unsafe cases are escalated,
+7. the project includes reproducible evaluation,
+8. the whole system can run locally with Docker.
+
+The final result should feel like a realistic internal AI tool that a support team could test in a pilot.
